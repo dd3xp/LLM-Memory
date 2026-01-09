@@ -76,12 +76,12 @@ stateDiagram-v2
 ## 3. 外观模式 (Facade Pattern)
 
 ### 用途
-简化Ruby和Python服务之间的复杂通信，提供统一简洁的调用接口。
+简化主进程与 AI 服务库之间的复杂调用，提供统一简洁的接口。
 
 ### 应用场景
-- 封装Python向量搜索调用
-- 封装Embeddings生成调用
-- 隐藏跨语言通信的技术细节
+- 封装向量搜索调用（vectra）
+- 封装 Embeddings 生成调用（@xenova/transformers）
+- 隐藏 AI 库的技术细节和初始化逻辑
 - 统一错误处理和数据格式转换
 
 ### 架构图
@@ -93,12 +93,13 @@ graph TB
         B[记忆管理]
     end
     
-    C[Python服务外观<br/>PythonBridge]
+    C[AI服务外观<br/>AIService]
     
-    subgraph Python["Python 服务"]
-        D[向量搜索<br/>faiss]
-        E[Embeddings生成<br/>sentence-transformers]
-        F[情感分析]
+    subgraph NodeAI["Node.js AI 库"]
+        D[向量搜索<br/>vectra]
+        E[Embeddings生成<br/>@xenova/transformers]
+        F[情感分析<br/>@xenova/transformers]
+        G[LLM调用<br/>openai/anthropic]
     end
     
     A --> C
@@ -106,14 +107,15 @@ graph TB
     C --> D
     C --> E
     C --> F
+    C --> G
     
     style C fill:#f39c12
     style Electron fill:#e8daef
-    style Python fill:#d6eaf8
+    style NodeAI fill:#d6eaf8
 ```
 
 ### 核心思想
-将复杂的跨语言调用、JSON解析、错误处理等细节封装在外观类中，Electron主进程只需要调用简单的方法，不需要关心底层实现细节。
+将复杂的 AI 库调用、模型初始化、错误处理等细节封装在外观类中，Electron 主进程只需要调用简单的方法，不需要关心底层实现细节。
 
 ---
 
