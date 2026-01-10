@@ -82,7 +82,7 @@ function setupIPC(): void {
       if (!conversationManager) {
         throw new Error('对话管理器未初始化')
       }
-      const messages = conversationManager.switchConversation(conversationId)
+      const messages = await conversationManager.switchConversation(conversationId)
       console.log('[IPC] 切换对话:', conversationId, '消息数:', messages.length)
       return messages
     } catch (error) {

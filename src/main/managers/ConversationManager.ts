@@ -73,7 +73,7 @@ export class ConversationManager {
   /**
    * 切换到指定对话
    */
-  switchConversation(conversationId: string): Message[] {
+  async switchConversation(conversationId: string): Promise<Message[]> {
     const conversation = this.db.getConversation(conversationId)
     
     if (!conversation) {
@@ -93,8 +93,8 @@ export class ConversationManager {
     const messages = this.db.getMessages(conversationId)
     const dialogueManager = this.dialogueManagers.get(conversationId)!
     
-    // 将消息加载到 DialogueManager
-    dialogueManager.loadMessages(messages)
+    // 将消息加载到 DialogueManager（异步）
+    await dialogueManager.loadMessages(messages)
 
     console.log('[ConversationManager] 切换对话:', conversationId)
     return messages
