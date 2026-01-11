@@ -10,6 +10,15 @@ import { v4 as uuidv4 } from 'uuid'
 import { AutoTokenizer } from '@xenova/transformers'
 import { config } from '../../../config'
 
+// 动态导入消融配置（仅在测试环境）
+let getAblationConfig: (() => any) | null = null
+try {
+  const ablationModule = require('../../test/AblationConfig')
+  getAblationConfig = ablationModule.getAblationConfig
+} catch {
+  // 测试模块不存在时忽略
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -32,15 +41,19 @@ export class DialogueManager {
   
   // 记录待提取insights的消息（Dynamic Cheatsheet）
   private pendingMessages: Message[] = []
+  
+  // 测试辅助：记录最后一次使用的 insights 数量
+  public lastInsightsUsedCount: number = 0
 
-  constructor(conversationId: string) {
+  constructor(conversationId: string, testDbPath?: string) {
     this.conversationId = conversationId
     this.llmService = new LLMService()
-    this.db = new DatabaseService()
-    this.curator = new CuratorService() // 初始化Curator
+    this.db = new DatabaseService(testDbPath) // 支持测试环境传入自定义数据库路径
+    this.curator = new CuratorService(this.db) // 传递数据库实例给Curator
     
-    // 从配置读取参数
-    this.maxContextTokens = config.memory.maxContextTokens
+    // 从配置读取参数（支持消融实验覆盖）
+    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    this.maxContextTokens = ablationConfig?.maxContextTokens ?? config.memory.maxContextTokens
     
     // 异步初始化Tokenizer
     this.tokenizerReady = this.initTokenizer()
@@ -152,9 +165,14 @@ export class DialogueManager {
         timestamp: assistantMsg.timestamp
       })
 
-      // 6. 提取Insights（Dynamic Cheatsheet - 论文核心功能）
+      // 6. 立即返回响应给用户
+      // 在后台异步提取Insights（Dynamic Cheatsheet - 论文核心功能）
       // 论文要求：memory curation after each query（每次查询后）
-      await this.extractInsightsAfterQuery(userMsg, assistantMsg)
+      // 不阻塞主流程，提升用户体验
+      this.extractInsightsAfterQuery(userMsg, assistantMsg)
+        .catch(error => {
+          console.error('[DialogueManager] 后台Insight提取任务失败:', error)
+        })
 
       return response
     } catch (error) {
@@ -184,13 +202,15 @@ export class DialogueManager {
     // 2. 获取相关Insights（Dynamic Cheatsheet - 论文核心）
     // 同时受数量和token双重限制
     const userQuery = this.messages[this.messages.length - 1]?.content || ''
-    const insights = await this.curator.getRelevantInsights(
-      userQuery, 
-      this.conversationId, 
-      config.memory.maxInsightsPerQuery,
-      config.memory.maxInsightsTokens,
-      this.countTokens.bind(this) // 传入tokenCounter
-    )
+    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    const insights = (!ablationConfig || ablationConfig.enableInsightRetrieval)
+      ? await this.curator.getRelevantInsights(
+          userQuery, 
+          this.conversationId, 
+          ablationConfig?.maxInsightsTokens ?? config.memory.maxInsightsTokens, // 支持消融实验调整
+          this.countTokens.bind(this) // 传入tokenCounter
+        )
+      : []
     
     if (insights.length > 0) {
       const insightsText = this.curator.formatInsights(insights)
@@ -202,7 +222,10 @@ export class DialogueManager {
         timestamp: Date.now()
       })
       totalTokens += insightsTokens
+      this.lastInsightsUsedCount = insights.length // 记录使用的 insights 数量
       console.log(`[DialogueManager] 包含Insights: ${insights.length}条, ${insightsTokens} tokens`)
+    } else {
+      this.lastInsightsUsedCount = 0 // 没有使用 insights
     }
     
     // 3. 从最新的消息开始往前取
@@ -233,6 +256,12 @@ export class DialogueManager {
    */
   private async extractInsightsAfterQuery(userMsg: Message, assistantMsg: Message): Promise<void> {
     try {
+      const ablationConfig = getAblationConfig ? getAblationConfig() : null
+      if (ablationConfig && !ablationConfig.enableInsightExtraction) {
+        console.log(`[Dynamic Cheatsheet] ⏭️  Insights提取已禁用（消融实验）`)
+        return
+      }
+      
       // 将本轮对话消息加入pending
       this.pendingMessages.push(userMsg, assistantMsg)
       
@@ -295,6 +324,12 @@ export class DialogueManager {
    * 生成摘要并清空旧消息（Cursor策略）
    */
   private async generateSummaryAndClear(): Promise<void> {
+    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    if (ablationConfig && !ablationConfig.enableSummary) {
+      console.log('[Summary] ⏭️  对话摘要已禁用（消融实验）')
+      return
+    }
+    
     console.log('[Summary] ⚠️ 上下文接近上限，开始生成摘要...')
 
     // 计算要摘要多少消息（前50%）

@@ -24,7 +24,7 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
   const [messages, setMessages] = useState<Message[]>([])
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
 
   // 加载对话列表
   const loadConversations = async (): Promise<void> => {
@@ -68,6 +68,9 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
       }))
       
       setMessages(formattedMessages)
+      
+      // 清除加载状态（如果之前的对话还在加载，切换后不应该显示加载）
+      // 注意：不清除 loadingConversationId，因为后台可能还在处理
     } catch (error) {
       console.error('切换对话失败:', error)
     }
@@ -103,10 +106,15 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
   // 发送消息
   const sendMessage = async (content: string): Promise<void> => {
     // 如果没有当前对话，先创建一个
-    if (!currentConversationId) {
+    let targetConversationId = currentConversationId
+    if (!targetConversationId) {
       await createConversation()
+      targetConversationId = currentConversationId // 创建后更新
     }
 
+    // 记录当前正在加载的对话ID
+    const messageConversationId = targetConversationId!
+    
     // 添加用户消息（乐观更新）
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -116,34 +124,45 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
     }
     setMessages((prev) => [...prev, userMessage])
 
-    setIsLoading(true)
+    setLoadingConversationId(messageConversationId)
     try {
       // 通过 IPC 发送到主进程
       const response = await window.api.sendMessage(content)
 
-      // 添加助手回复
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response,
-        timestamp: Date.now()
+      // 只有当前对话ID仍然是发送消息的对话时，才添加回复
+      // 这样即使用户切换了对话，回复也不会显示在错误的对话中
+      if (currentConversationId === messageConversationId) {
+        // 添加助手回复
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: response,
+          timestamp: Date.now()
+        }
+        setMessages((prev) => [...prev, assistantMessage])
       }
-      setMessages((prev) => [...prev, assistantMessage])
       
       // 刷新对话列表（更新最后消息和时间）
       await loadConversations()
     } catch (error) {
       console.error('发送消息失败:', error)
-      // 添加错误消息
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '抱歉，我遇到了一些问题。请检查网络连接或稍后再试。',
-        timestamp: Date.now()
+      
+      // 只有当前对话ID仍然是发送消息的对话时，才显示错误
+      if (currentConversationId === messageConversationId) {
+        // 添加错误消息
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '抱歉，我遇到了一些问题。请检查网络连接或稍后再试。',
+          timestamp: Date.now()
+        }
+        setMessages((prev) => [...prev, errorMessage])
       }
-      setMessages((prev) => [...prev, errorMessage])
     } finally {
-      setIsLoading(false)
+      // 只有当加载的对话ID仍然是当前对话时，才清除加载状态
+      setLoadingConversationId((prev) => 
+        prev === messageConversationId ? null : prev
+      )
     }
   }
 
@@ -151,6 +170,9 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
   useEffect(() => {
     loadConversations()
   }, [mode])
+
+  // 计算当前对话是否正在加载
+  const isLoading = loadingConversationId === currentConversationId
 
   return {
     messages,

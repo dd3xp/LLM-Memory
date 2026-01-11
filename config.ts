@@ -1,12 +1,11 @@
 /**
  * 全局配置文件
- * 存放API密钥等配置信息
  */
 
 export const config = {
   // LLM 配置
   llm: {
-    // 对话模型配置
+    // 对话模型
     chat: {
       apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
       baseURL: 'https://api.siliconflow.cn/v1',
@@ -15,8 +14,7 @@ export const config = {
       maxTokens: 2000,
       topP: 0.9
     },
-    
-    // 摘要模型配置
+    // 摘要模型
     summary: {
       apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
       baseURL: 'https://api.siliconflow.cn/v1',
@@ -25,8 +23,7 @@ export const config = {
       maxTokens: 3000,
       topP: 0.8
     },
-    
-    // Curator模型配置（提取和管理Insights）
+    // Curator 模型（知识策展）
     curator: {
       apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
       baseURL: 'https://api.siliconflow.cn/v1',
@@ -39,12 +36,14 @@ export const config = {
 
   // 记忆配置
   memory: {
-    maxContextTokens: 80000, // 调整：更安全的上限，预留足够缓冲空间
-    maxInsightsPerQuery: 8, // 调整：减少数量，提高单条质量
-    maxInsightsTokens: 3000, // 调整：增加token预算，平均每条375 tokens
-    enableRAG: false // 暂时不启用RAG
-    // Cheatsheet策略：当消息总量超过80%上限时，自动摘要前50%并清空
+    maxContextTokens: 80000,        // 最大上下文 token 数
+    maxInsightsTokens: 3000,        // Insights 检索的 token 预算
+    enableRAG: false                // 暂时不启用 RAG
+  },
+
+  // wandb 配置
+  wandb: {
+    apiKey: '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',
+    enabled: true
   }
 }
-
-export default config

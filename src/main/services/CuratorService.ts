@@ -9,6 +9,15 @@ import { DatabaseService, Insight } from './DatabaseService'
 import { EmbeddingService } from './EmbeddingService'
 import { v4 as uuidv4 } from 'uuid'
 
+// 动态导入消融配置（仅在测试环境）
+let getAblationConfig: (() => any) | null = null
+try {
+  const ablationModule = require('../../test/AblationConfig')
+  getAblationConfig = ablationModule.getAblationConfig
+} catch {
+  // 测试模块不存在时忽略
+}
+
 // 简化的消息接口（不需要id和conversation_id）
 interface SimpleMessage {
   role: 'user' | 'assistant' | 'system'
@@ -28,9 +37,9 @@ export class CuratorService {
   private db: DatabaseService
   private embedder: EmbeddingService
 
-  constructor() {
+  constructor(db?: DatabaseService) {
     this.llmService = new LLMService()
-    this.db = new DatabaseService()
+    this.db = db || new DatabaseService()
     this.embedder = new EmbeddingService()
     console.log('[CuratorService] 知识策展服务已初始化（语义搜索已启用）')
   }
@@ -77,52 +86,130 @@ export class CuratorService {
       const insights: Insight[] = []
       const now = Date.now()
 
-      for (const extracted of extractedInsights) {
-        // 只处理重要性 > 0.5 的insights
-        if (extracted.importance <= 0.5) {
+      // ========== 统一策略：Embedding Top-K + 批量 LLM ==========
+      const totalExistingInsights = existingInsights.length
+      const newInsightsToProcess = extractedInsights.filter(e => e.importance > 0.5)
+      
+      console.log(`[Curator] 🔍 已有 ${totalExistingInsights} 条 Insights，开始处理 ${newInsightsToProcess.length} 条新知识`)
+      
+      interface PendingInsight {
+        extracted: ExtractedInsight
+        topSimilar?: Array<{ insight: Insight; similarity: number }>
+        needsLLMCheck: boolean
+      }
+      
+      const pendingInsights: PendingInsight[] = []
+      
+      for (const extracted of newInsightsToProcess) {
+        // 快速检查相似度（不调用 LLM）
+        const quickCheck = await this.quickSimilarityCheck(extracted, existingInsights)
+        
+        if (quickCheck.action === 'skip') {
+          console.log(`[Curator] ⏭️ 快速跳过重复: ${extracted.content.substring(0, 30)}...`)
           continue
         }
-
-        // 检查相似度和冲突
-        const checkResult = await this.checkSimilarityAndConflict(
-          extracted,
-          existingInsights
-        )
-
-        if (checkResult.action === 'skip') {
-          console.log(`[Curator] ⏭️ 跳过重复insight: ${extracted.content.substring(0, 30)}...`)
-          continue
-        }
-
-        if (checkResult.action === 'deprecate') {
-          // 标记旧的为已废弃
-          console.log(`[Curator] 🔄 发现冲突，废弃旧insight: ${checkResult.conflictWith?.content.substring(0, 30)}...`)
-          if (checkResult.conflictWith) {
-            this.db.deprecateInsight(checkResult.conflictWith.id)
+        
+        if (quickCheck.action === 'add') {
+          // 可以直接添加
+          const embeddingVec = await this.embedder.encode(extracted.content)
+          const embedding = EmbeddingService.toBuffer(embeddingVec)
+          
+          const insight: Insight = {
+            id: uuidv4(),
+            conversation_id: conversationId,
+            type: extracted.type,
+            content: extracted.content,
+            context: extracted.context,
+            importance: extracted.importance,
+            reuse_count: 0,
+            is_deprecated: 0,
+            embedding,
+            created_at: now,
+            last_used: now
           }
+          
+          this.db.addInsight(insight)
+          insights.push(insight)
+          continue
         }
-
-        // 生成embedding向量
-        const embeddingVec = await this.embedder.encode(extracted.content)
-        const embedding = EmbeddingService.toBuffer(embeddingVec)
-
-        // 添加新insight
-        const insight: Insight = {
-          id: uuidv4(),
-          conversation_id: conversationId,
-          type: extracted.type,
-          content: extracted.content,
-          context: extracted.context,
-          importance: extracted.importance,
-          reuse_count: 0,
-          is_deprecated: 0,
-          embedding,
-          created_at: now,
-          last_used: now
+        
+        if (quickCheck.action === 'deprecate') {
+          // 可以直接替换
+          if (quickCheck.conflictWith) {
+            this.db.deprecateInsight(quickCheck.conflictWith.id)
+          }
+          
+          const embeddingVec = await this.embedder.encode(extracted.content)
+          const embedding = EmbeddingService.toBuffer(embeddingVec)
+          
+          const insight: Insight = {
+            id: uuidv4(),
+            conversation_id: conversationId,
+            type: extracted.type,
+            content: extracted.content,
+            context: extracted.context,
+            importance: extracted.importance,
+            reuse_count: 0,
+            is_deprecated: 0,
+            embedding,
+            created_at: now,
+            last_used: now
+          }
+          
+          this.db.addInsight(insight)
+          insights.push(insight)
+          continue
         }
-
-        this.db.addInsight(insight)
-        insights.push(insight)
+        
+        // action === 'check_conflict'：需要 LLM 检测
+        pendingInsights.push({
+          extracted,
+          topSimilar: quickCheck.topSimilar,
+          needsLLMCheck: true
+        })
+      }
+      
+      // 批量 LLM 检测（仅针对需要检测的）
+      if (pendingInsights.length > 0) {
+        const totalCandidates = pendingInsights.reduce((sum, p) => sum + (p.topSimilar?.length || 0), 0)
+        console.log(`[Curator] 🚀 一次性批量检测 ${pendingInsights.length} 条新 Insights (共 ${totalCandidates} 个候选配对)`)
+        const batchResults = await this.batchConflictCheck(pendingInsights)
+        
+        for (let i = 0; i < pendingInsights.length; i++) {
+          const pending = pendingInsights[i]
+          const result = batchResults[i]
+          
+          if (result.action === 'skip') {
+            console.log(`[Curator] ⏭️ 跳过: ${pending.extracted.content.substring(0, 30)}...`)
+            continue
+          }
+          
+          if (result.action === 'deprecate' && result.conflictWith) {
+            console.log(`[Curator] 🔄 废弃旧的: ${result.conflictWith.content.substring(0, 30)}...`)
+            this.db.deprecateInsight(result.conflictWith.id)
+          }
+          
+          // 添加新 insight
+          const embeddingVec = await this.embedder.encode(pending.extracted.content)
+          const embedding = EmbeddingService.toBuffer(embeddingVec)
+          
+          const insight: Insight = {
+            id: uuidv4(),
+            conversation_id: conversationId,
+            type: pending.extracted.type,
+            content: pending.extracted.content,
+            context: pending.extracted.context,
+            importance: pending.extracted.importance,
+            reuse_count: 0,
+            is_deprecated: 0,
+            embedding,
+            created_at: now,
+            last_used: now
+          }
+          
+          this.db.addInsight(insight)
+          insights.push(insight)
+        }
       }
 
       if (insights.length === 0) {
@@ -234,7 +321,6 @@ ${conversation}
   async getRelevantInsights(
     query: string,
     conversationId: string,
-    maxCount: number = 5,
     maxTokens: number = 2000,
     tokenCounter?: (text: string) => Promise<number>
   ): Promise<Insight[]> {
@@ -281,17 +367,12 @@ ${conversation}
     // 按综合得分排序
     const sorted = scoredInsights.sort((a, b) => b.score - a.score)
 
-    // 逐条添加，直到达到数量或token限制
+    // 逐条添加，直到达到token限制
     const relevant: Insight[] = []
     let totalTokens = 0
 
     for (const item of sorted) {
       const insight = item.insight
-
-      // 达到数量上限
-      if (relevant.length >= maxCount) {
-        break
-      }
 
       // 如果提供了tokenCounter，检查token限制
       if (tokenCounter) {
@@ -381,13 +462,40 @@ ${conversation}
   }
 
   /**
-   * 检查相似度和冲突
-   * 返回：skip（跳过重复）、deprecate（废弃旧的）、add（直接添加）
+   * 计算动态 Top-K 值
+   * k = f(n) = 3 + floor(log₁₀(n + 1))
+   * 增长极慢的对数函数，确保初期有足够覆盖，后期不会过度膨胀
+   * 无上限，随 Insights 数量对数增长
    */
-  private async checkSimilarityAndConflict(
+  private calculateTopK(totalInsights: number): number {
+    if (totalInsights === 0) return 3
+    
+    const k = 3 + Math.floor(Math.log10(totalInsights + 1))
+    
+    return Math.max(k, 3)  // 最小值保证
+  }
+
+  /**
+   * 快速相似度检查（纯 Embedding，无 LLM）
+   * 返回：skip/add/deprecate/check_conflict
+   * 支持 Top-K 检测
+   */
+  private async quickSimilarityCheck(
     newInsight: ExtractedInsight,
     existingInsights: Insight[]
-  ): Promise<{ action: 'skip' | 'deprecate' | 'add'; conflictWith?: Insight }> {
+  ): Promise<{ 
+    action: 'skip' | 'add' | 'deprecate' | 'check_conflict'
+    conflictWith?: Insight
+    topSimilar?: Array<{ insight: Insight; similarity: number }>
+  }> {
+    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    
+    // 消融实验：如果禁用相似度检测，直接添加
+    if (ablationConfig && !ablationConfig.enableSimilarityCheck) {
+      console.log(`[Curator] ⏭️  相似度检测已禁用（消融实验），直接添加`)
+      return { action: 'add' }
+    }
+    
     // 只检查相同类型的insights
     const sameTypeInsights = existingInsights.filter(i => i.type === newInsight.type)
 
@@ -395,114 +503,222 @@ ${conversation}
       return { action: 'add' }
     }
 
-    // 构建批量检测prompt
-    const checkPrompt = `
-请分析以下新知识与已有知识的关系：
+    // 计算动态 Top-K
+    const topK = this.calculateTopK(sameTypeInsights.length)
 
-【新知识】
-类型: ${newInsight.type}
-内容: ${newInsight.content}
-背景: ${newInsight.context}
+    // 生成新 insight 的 embedding
+    const newEmbedding = await this.embedder.encode(newInsight.content)
+    
+    // 计算所有相似度并排序，找出 Top-K
+    const allSimilarities: Array<{ insight: Insight; similarity: number }> = []
+    
+    for (const insight of sameTypeInsights) {
+      if (!insight.embedding) continue
+      
+      const existingEmbedding = EmbeddingService.fromBuffer(insight.embedding)
+      const similarity = EmbeddingService.cosineSimilarity(newEmbedding, existingEmbedding)
+      
+      allSimilarities.push({ insight, similarity })
+    }
+    
+    // 按相似度降序排序
+    allSimilarities.sort((a, b) => b.similarity - a.similarity)
+    
+    // ✨ 优化：只取 >= 0.80 的，且不超过 k 个
+    const highSimilar = allSimilarities.filter(s => s.similarity >= 0.80)
+    const topSimilar = highSimilar.slice(0, Math.min(highSimilar.length, topK))
+    
+    // 如果没有 >= 0.80 的，直接添加
+    if (topSimilar.length === 0) {
+      console.log(`[Curator] ✅ 无高相似度项 (<80%)，直接添加`)
+      return { action: 'add' }
+    }
+    
+    console.log(`[Curator] ⚠️ 找到 ${highSimilar.length} 个高相似项 (≥80%)，发送 Top-${topSimilar.length} 给 LLM`)
+    
+    // 相似度 ≥ 0.80 - 需要 LLM 判断是冲突还是重复
+    return { action: 'check_conflict', topSimilar }
+  }
 
-【已有知识】
-${sameTypeInsights.map((insight, idx) => `
-${idx + 1}. 内容: ${insight.content}
-   背景: ${insight.context}
-   重要性: ${insight.importance}
-`).join('\n')}
+  /**
+   * 批量冲突检测（一次 LLM 调用检测多条）
+   * 用于 Embedding 筛选后的候选项
+   * 支持 Top-K 检测
+   */
+  private async batchConflictCheck(
+    pendingInsights: Array<{
+      extracted: ExtractedInsight
+      topSimilar?: Array<{ insight: Insight; similarity: number }>
+      needsLLMCheck: boolean
+    }>
+  ): Promise<Array<{ action: 'skip' | 'deprecate' | 'add'; conflictWith?: Insight }>> {
+    if (pendingInsights.length === 0) {
+      return []
+    }
+    
+    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    
+    // 消融实验：如果禁用冲突检测，全部直接添加
+    if (ablationConfig && !ablationConfig.enableConflictCheck) {
+      console.log(`[Curator] ⏭️  冲突检测已禁用（消融实验），${pendingInsights.length} 条全部添加`)
+      return pendingInsights.map(() => ({ action: 'add' as const }))
+    }
+
+    // 构建批量检测 prompt（包含 Top-K 相似的）
+    const batchPrompt = `
+请分析以下 ${pendingInsights.length} 条新知识，判断它们与最相似的已有知识的关系。
+
+${pendingInsights.map((p, idx) => {
+  const topSimilar = p.topSimilar || []
+  return `
+【新知识 ${idx + 1}】
+- 类型: ${p.extracted.type}
+- 内容: ${p.extracted.content}
+- 背景: ${p.extracted.context}
+- 重要性: ${p.extracted.importance}
+
+最相似的已有知识（Top-${topSimilar.length}）：
+${topSimilar.map((sim, simIdx) => `
+  ${simIdx + 1}. [相似度 ${(sim.similarity * 100).toFixed(1)}%]
+     内容: ${sim.insight.content}
+     背景: ${sim.insight.context}
+     重要性: ${sim.insight.importance}
+`).join('')}
+`
+}).join('\n---\n')}
 
 ---
 
-请判断：
-1. 新知识是否与某条已有知识**高度相似**（表达同一个意思）？
-2. 新知识是否与某条已有知识**冲突矛盾**（结论相反）？
+对每条新知识，判断它与最相似的已有知识的关系：
+1. **冲突**：结论相反或矛盾 → 用新知识替换旧知识
+2. **重复**：表达同一个意思 → 跳过新知识
+3. **补充**：相关但不同的信息 → 添加新知识
 
-输出JSON格式：
+输出JSON数组：
 \`\`\`json
-{
-  "is_similar": true/false,
-  "similar_to_index": 数字或null,
-  "is_conflict": true/false,
-  "conflict_with_index": 数字或null,
-  "reason": "简短解释"
-}
+[
+  {
+    "new_index": 1,
+    "is_conflict": true/false,
+    "is_duplicate": true/false,
+    "conflict_with_index": null或数字(1-${(pendingInsights[0]?.topSimilar?.length || 0)}),
+    "reason": "简短解释"
+  },
+  ...
+]
 \`\`\`
 
-只输出JSON，不要其他文字。`
+判断规则：
+- is_conflict=true → 废弃旧的，用新的替换（因为新的更准确）
+- is_duplicate=true → 跳过新的（已有相同知识）
+- 两者都false → 添加新的（补充信息）
+
+只输出JSON数组，不要其他文字。`
 
     try {
-      // 使用Curator模型进行相似度和冲突检测
+      console.log(`[Curator] 📡 发起 1 次 LLM 调用，批量检测 ${pendingInsights.length} 条新知识...`)
+      
+      // 使用 Curator 模型批量检测（重点：这是一次调用！）
       const response = await this.llmService.generateCurator(
-        [{ role: 'user', content: checkPrompt }],
-        '你是一个专业的知识分析助手，擅长判断知识的相似性和冲突性。'
+        [{ role: 'user', content: batchPrompt }],
+        '你是一个专业的知识分析助手，擅长批量判断知识的冲突性、重复性和补充性。'
       )
 
-      const result = this.parseCheckResult(response)
-
-      if (result.is_similar && result.similar_to_index !== null) {
-        const similarInsight = sameTypeInsights[result.similar_to_index - 1]
-        console.log(`[Curator] 📋 发现相似insight: ${result.reason}`)
+      console.log(`[Curator] ✅ LLM 批量检测完成，解析结果...`)
+      const results = this.parseBatchConflictResultTopK(response, pendingInsights)
+      
+      // 映射结果
+      return pendingInsights.map((_, idx) => {
+        const result = results[idx]
         
-        // 如果新的重要性更高，废弃旧的；否则跳过
-        if (newInsight.importance > similarInsight.importance) {
-          return { action: 'deprecate', conflictWith: similarInsight }
-        } else {
-          return { action: 'skip' }
+        if (!result) {
+          // 解析失败，默认添加
+          console.warn(`[Curator] 批量检测结果缺失 (新知识 ${idx + 1})，默认添加`)
+          return { action: 'add' }
         }
-      }
-
-      if (result.is_conflict && result.conflict_with_index !== null) {
-        const conflictInsight = sameTypeInsights[result.conflict_with_index - 1]
-        console.log(`[Curator] ⚠️ 发现冲突insight: ${result.reason}`)
         
-        // 新知识优先（假设新的更准确），废弃旧的
-        return { action: 'deprecate', conflictWith: conflictInsight }
-      }
-
-      return { action: 'add' }
+        // 清晰的日志输出
+        const actionText = {
+          skip: '⏭️ 跳过（重复）',
+          deprecate: '🔄 替换旧的（冲突）',
+          add: '✅ 添加（补充）'
+        }[result.action]
+        
+        console.log(`[Curator] 新${idx + 1}: ${actionText} - ${result.reason}`)
+        
+        return {
+          action: result.action,
+          conflictWith: result.conflictWith
+        }
+      })
     } catch (error) {
-      console.error('[Curator] 检测相似度/冲突失败:', error)
-      // 失败时默认添加
-      return { action: 'add' }
+      console.error('[Curator] 批量检测失败:', error)
+      // 失败时全部添加（保守策略）
+      return pendingInsights.map(() => ({ action: 'add' }))
     }
   }
 
   /**
-   * 解析相似度/冲突检测结果
+   * 解析批量冲突检测结果（Top-K 版本）
    */
-  private parseCheckResult(response: string): {
-    is_similar: boolean
-    similar_to_index: number | null
-    is_conflict: boolean
-    conflict_with_index: number | null
+  private parseBatchConflictResultTopK(
+    response: string,
+    pendingInsights: Array<{
+      extracted: ExtractedInsight
+      topSimilar?: Array<{ insight: Insight; similarity: number }>
+      needsLLMCheck: boolean
+    }>
+  ): Array<{
+    action: 'skip' | 'deprecate' | 'add'
+    conflictWith?: Insight
     reason: string
-  } {
+  }> {
     try {
-      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) || response.match(/\{[\s\S]*\}/)
+      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) || response.match(/\[([\s\S]*)\]/)
       
       if (!jsonMatch) {
-        return {
-          is_similar: false,
-          similar_to_index: null,
-          is_conflict: false,
-          conflict_with_index: null,
-          reason: 'Parse failed'
-        }
+        console.warn('[Curator] 无法提取JSON')
+        return []
       }
 
       const jsonStr = jsonMatch[1] || jsonMatch[0]
-      return JSON.parse(jsonStr)
+      const rawResults = JSON.parse(jsonStr.startsWith('[') ? jsonStr : '[' + jsonStr + ']')
+
+      return rawResults.map((r: any, idx: number) => {
+        let action: 'skip' | 'deprecate' | 'add' = 'add'
+        let conflictWith: Insight | undefined
+        
+        // 根据 is_conflict 和 is_duplicate 判断 action
+        if (r.is_duplicate === true) {
+          action = 'skip'
+        } else if (r.is_conflict === true) {
+          action = 'deprecate'
+          
+          // 找出要废弃的旧知识
+          if (r.conflict_with_index !== null && r.conflict_with_index !== undefined) {
+            const topSimilar = pendingInsights[idx]?.topSimilar || []
+            const simIndex = r.conflict_with_index - 1  // 转换为 0-based
+            
+            if (simIndex >= 0 && simIndex < topSimilar.length) {
+              conflictWith = topSimilar[simIndex].insight
+            }
+          }
+        } else {
+          action = 'add'
+        }
+        
+        return {
+          action,
+          conflictWith,
+          reason: r.reason || ''
+        }
+      })
     } catch (error) {
-      console.error('[Curator] 解析检测结果失败:', error)
-      return {
-        is_similar: false,
-        similar_to_index: null,
-        is_conflict: false,
-        conflict_with_index: null,
-        reason: 'Parse error'
-      }
+      console.error('[Curator] 解析批量检测结果失败:', error)
+      return []
     }
   }
+
 
   /**
    * 定期清理低质量Insights

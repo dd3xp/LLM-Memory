@@ -1,10 +1,9 @@
 /**
  * LLM 服务
- * 使用 OpenAI SDK 连接到 SiliconFlow 的 Qwen 模型
  */
 
 import OpenAI from 'openai'
-import config from '../../../config'
+import { config } from '../../../config'
 
 interface Message {
   role: 'system' | 'user' | 'assistant'

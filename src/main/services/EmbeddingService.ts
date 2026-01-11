@@ -24,7 +24,7 @@ export class EmbeddingService {
       // 使用feature-extraction pipeline
       this.embedder = await pipeline('feature-extraction', this.modelName, {
         quantized: true // 使用量化模型以减少内存占用
-      })
+      }) as any  // 类型断言以避免 ts-node 编译问题
       
       console.log('[EmbeddingService] ✅ Embedding模型加载完成')
     } catch (error) {

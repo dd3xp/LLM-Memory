@@ -2,7 +2,7 @@
  * 数据库服务 - 使用 SQLite 持久化数据
  */
 
-import Database from 'better-sqlite3'
+import * as Database from 'better-sqlite3'
 import { app } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -44,21 +44,32 @@ export interface Insight {
 export class DatabaseService {
   private db: Database.Database
 
-  constructor() {
+  constructor(customDbPath?: string) {
     // 数据库文件路径：项目根目录/data/memory.db
-    const projectRoot = app.getAppPath()
-    const dataDir = path.join(projectRoot, 'data')
+    let dbPath: string
     
-    // 确保 data 目录存在
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true })
+    if (customDbPath) {
+      // 使用自定义路径（测试环境）
+      dbPath = customDbPath
+    } else {
+      // 检测是否在 Electron 环境
+      const projectRoot = app?.getAppPath() || process.cwd()
+      const dataDir = path.join(projectRoot, 'data')
+      
+      // 确保 data 目录存在
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true })
+      }
+      
+      dbPath = path.join(dataDir, 'memory.db')
     }
     
-    const dbPath = path.join(dataDir, 'memory.db')
     console.log('[DatabaseService] 数据库路径:', dbPath)
     
     // 打开数据库（如果不存在会自动创建）
-    this.db = new Database(dbPath)
+    // 兼容 Electron 和 ts-node 环境的导入方式
+    const DatabaseConstructor = (Database as any).default || Database
+    this.db = new DatabaseConstructor(dbPath)
     
     // 启用外键约束
     this.db.pragma('foreign_keys = ON')
