@@ -41,6 +41,67 @@ export interface Insight {
   last_used: number
 }
 
+// ==================== 角色扮演相关类型 ====================
+
+export interface Character {
+  id: string
+  name: string
+  avatar?: string // 头像URL或base64
+  description: string // 角色简介
+  base_prompt: string // 基础人设prompt
+  created_at: number
+  updated_at: number
+}
+
+export type CharacterMemoryCategory = 'self' | 'user' | 'relationship' | 'event'
+export type CharacterMemoryType = 
+  | 'self_identity' | 'self_personality' | 'self_background' | 'self_habit' 
+  | 'self_catchphrase' | 'self_secret' | 'speaking_style'
+  | 'user_preference' | 'user_fact' | 'user_secret'
+  | 'shared_memory' | 'emotional_event' | 'relationship_milestone'
+  | 'current_topic' | 'current_mood'
+
+export interface CharacterMemory {
+  id: string
+  character_id: string
+  user_id: string
+  category: CharacterMemoryCategory
+  type: CharacterMemoryType
+  content: string
+  context?: string
+  importance: number
+  emotional_intensity: number // 情感强度 0-1
+  embedding?: Buffer
+  is_deprecated: number
+  created_at: number
+  updated_at: number
+  last_recalled?: number
+}
+
+export type EmotionType = 'calm' | 'happy' | 'angry' | 'sad' | 'anxious' | 'excited'
+export type RelationshipType = 'stranger' | 'acquaintance' | 'friend' | 'close_friend' | 'conflict'
+export type TrustType = 'distrust' | 'neutral' | 'trust' | 'deep_trust'
+
+export interface CharacterState {
+  id?: number
+  character_id: string
+  user_id: string
+  // 情绪状态
+  emotion: EmotionType
+  emotion_intensity: number
+  // 关系状态
+  relationship: RelationshipType
+  relationship_score: number
+  // 信任状态
+  trust: TrustType
+  trust_score: number
+  // 能量状态
+  energy: number
+  // 时间戳
+  last_updated: number
+  last_interaction: number
+}
+
 export class DatabaseService {
   private db: Database.Database
 
@@ -145,6 +206,65 @@ export class DatabaseService {
 
       -- 插入版本信息
       INSERT OR IGNORE INTO schema_version VALUES (1, strftime('%s', 'now') * 1000);
+
+      -- ==================== 角色扮演相关表 ====================
+      
+      -- 角色表
+      CREATE TABLE IF NOT EXISTS characters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        avatar TEXT,
+        description TEXT NOT NULL,
+        base_prompt TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      -- 角色记忆表
+      CREATE TABLE IF NOT EXISTS character_memories (
+        id TEXT PRIMARY KEY,
+        character_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        category TEXT CHECK(category IN ('self', 'user', 'relationship', 'event')) NOT NULL,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        context TEXT,
+        importance REAL DEFAULT 0.5,
+        emotional_intensity REAL DEFAULT 0.5,
+        embedding BLOB,
+        is_deprecated INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_recalled INTEGER,
+        FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+      );
+
+      -- 角色状态表
+      CREATE TABLE IF NOT EXISTS character_states (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        character_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        emotion TEXT DEFAULT 'calm',
+        emotion_intensity REAL DEFAULT 0.5,
+        relationship TEXT DEFAULT 'stranger',
+        relationship_score REAL DEFAULT 0,
+        trust TEXT DEFAULT 'neutral',
+        trust_score REAL DEFAULT 0,
+        energy REAL DEFAULT 1.0,
+        last_updated INTEGER NOT NULL,
+        last_interaction INTEGER,
+        UNIQUE(character_id, user_id),
+        FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+      );
+
+      -- 角色扮演对话表（复用conversations，但type='roleplay'）
+      -- 不需要新建表，只需扩展type检查
+
+      -- 角色相关索引
+      CREATE INDEX IF NOT EXISTS idx_char_mem_character ON character_memories(character_id);
+      CREATE INDEX IF NOT EXISTS idx_char_mem_category ON character_memories(character_id, category);
+      CREATE INDEX IF NOT EXISTS idx_char_mem_type ON character_memories(character_id, type);
+      CREATE INDEX IF NOT EXISTS idx_char_states_character ON character_states(character_id, user_id);
     `
     
     this.db.exec(schema)
@@ -167,7 +287,7 @@ export class DatabaseService {
           ALTER TABLE conversations ADD COLUMN cheatsheet TEXT DEFAULT '';
           ALTER TABLE conversations ADD COLUMN cheatsheet_tokens INTEGER DEFAULT 0;
         `)
-        console.log('[DatabaseService] ✅ 迁移1完成：cheatsheet字段已添加')
+        console.log('[DatabaseService] 迁移1完成：cheatsheet字段已添加')
       }
 
       // 迁移2: 检查insights表是否有is_deprecated字段
@@ -175,7 +295,7 @@ export class DatabaseService {
       if (!hasDeprecated) {
         console.log('[DatabaseService] 执行迁移2：添加is_deprecated字段...')
         this.db.exec(`ALTER TABLE insights ADD COLUMN is_deprecated INTEGER DEFAULT 0;`)
-        console.log('[DatabaseService] ✅ 迁移2完成：is_deprecated字段已添加')
+        console.log('[DatabaseService] 迁移2完成：is_deprecated字段已添加')
       }
 
       // 迁移3: 检查insights表是否有embedding字段
@@ -183,7 +303,7 @@ export class DatabaseService {
       if (!hasEmbedding) {
         console.log('[DatabaseService] 执行迁移3：添加embedding字段...')
         this.db.exec(`ALTER TABLE insights ADD COLUMN embedding BLOB;`)
-        console.log('[DatabaseService] ✅ 迁移3完成：embedding字段已添加')
+        console.log('[DatabaseService] 迁移3完成：embedding字段已添加')
       }
 
       // 迁移4: 重命名 cheatsheet → summary（概念纠正）
@@ -195,7 +315,7 @@ export class DatabaseService {
           ALTER TABLE conversations ADD COLUMN summary_tokens INTEGER DEFAULT 0;
           UPDATE conversations SET summary = cheatsheet, summary_tokens = cheatsheet_tokens;
         `)
-        console.log('[DatabaseService] ✅ 迁移4完成：字段已重命名（cheatsheet数据已迁移到summary）')
+        console.log('[DatabaseService] 迁移4完成：字段已重命名（cheatsheet数据已迁移到summary）')
       }
     } catch (error) {
       console.error('[DatabaseService] 迁移失败:', error)
@@ -501,5 +621,309 @@ export class DatabaseService {
   close(): void {
     this.db.close()
     console.log('[DatabaseService] 数据库连接已关闭')
+  }
+
+  // ==================== 角色管理 ====================
+
+  /**
+   * 创建角色
+   */
+  createCharacter(character: Omit<Character, 'created_at' | 'updated_at'>): Character {
+    const now = Date.now()
+    const fullCharacter: Character = {
+      ...character,
+      created_at: now,
+      updated_at: now
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO characters (id, name, avatar, description, base_prompt, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    stmt.run(
+      fullCharacter.id,
+      fullCharacter.name,
+      fullCharacter.avatar || null,
+      fullCharacter.description,
+      fullCharacter.base_prompt,
+      fullCharacter.created_at,
+      fullCharacter.updated_at
+    )
+
+    console.log('[DatabaseService] 创建角色:', fullCharacter.name)
+    return fullCharacter
+  }
+
+  /**
+   * 获取所有角色
+   */
+  getCharacters(): Character[] {
+    const stmt = this.db.prepare('SELECT * FROM characters ORDER BY updated_at DESC')
+    return stmt.all() as Character[]
+  }
+
+  /**
+   * 获取单个角色
+   */
+  getCharacter(id: string): Character | null {
+    const stmt = this.db.prepare('SELECT * FROM characters WHERE id = ?')
+    const character = stmt.get(id) as Character | undefined
+    return character || null
+  }
+
+  /**
+   * 更新角色
+   */
+  updateCharacter(id: string, updates: Partial<Omit<Character, 'id' | 'created_at'>>): void {
+    const fields: string[] = []
+    const values: any[] = []
+
+    if (updates.name !== undefined) {
+      fields.push('name = ?')
+      values.push(updates.name)
+    }
+    if (updates.avatar !== undefined) {
+      fields.push('avatar = ?')
+      values.push(updates.avatar)
+    }
+    if (updates.description !== undefined) {
+      fields.push('description = ?')
+      values.push(updates.description)
+    }
+    if (updates.base_prompt !== undefined) {
+      fields.push('base_prompt = ?')
+      values.push(updates.base_prompt)
+    }
+
+    fields.push('updated_at = ?')
+    values.push(Date.now())
+    values.push(id)
+
+    const stmt = this.db.prepare(`UPDATE characters SET ${fields.join(', ')} WHERE id = ?`)
+    stmt.run(...values)
+    console.log('[DatabaseService] 更新角色:', id)
+  }
+
+  /**
+   * 删除角色
+   */
+  deleteCharacter(id: string): void {
+    const stmt = this.db.prepare('DELETE FROM characters WHERE id = ?')
+    stmt.run(id)
+    console.log('[DatabaseService] 删除角色:', id)
+  }
+
+  // ==================== 角色记忆管理 ====================
+
+  /**
+   * 添加角色记忆
+   */
+  addCharacterMemory(memory: Omit<CharacterMemory, 'is_deprecated' | 'last_recalled'>): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO character_memories (
+        id, character_id, user_id, category, type, content, context,
+        importance, emotional_intensity, embedding, is_deprecated,
+        created_at, updated_at, last_recalled
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    `)
+
+    stmt.run(
+      memory.id,
+      memory.character_id,
+      memory.user_id,
+      memory.category,
+      memory.type,
+      memory.content,
+      memory.context || null,
+      memory.importance,
+      memory.emotional_intensity,
+      memory.embedding || null,
+      memory.created_at,
+      memory.updated_at,
+      null
+    )
+    console.log('[DatabaseService] 添加角色记忆:', memory.type)
+  }
+
+  /**
+   * 获取角色记忆（按类别和类型筛选）
+   */
+  getCharacterMemories(
+    characterId: string,
+    userId: string,
+    options?: {
+      category?: CharacterMemoryCategory
+      type?: CharacterMemoryType
+      limit?: number
+    }
+  ): CharacterMemory[] {
+    let query = `
+      SELECT * FROM character_memories 
+      WHERE character_id = ? AND user_id = ? AND is_deprecated = 0
+    `
+    const params: any[] = [characterId, userId]
+
+    if (options?.category) {
+      query += ' AND category = ?'
+      params.push(options.category)
+    }
+
+    if (options?.type) {
+      query += ' AND type = ?'
+      params.push(options.type)
+    }
+
+    query += ' ORDER BY importance DESC, updated_at DESC'
+
+    if (options?.limit) {
+      query += ` LIMIT ${options.limit}`
+    }
+
+    const stmt = this.db.prepare(query)
+    return stmt.all(...params) as CharacterMemory[]
+  }
+
+  /**
+   * 获取所有角色记忆（用于向量检索）
+   */
+  getAllCharacterMemories(characterId: string, userId: string): CharacterMemory[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM character_memories 
+      WHERE character_id = ? AND user_id = ? AND is_deprecated = 0
+      ORDER BY importance DESC
+    `)
+    return stmt.all(characterId, userId) as CharacterMemory[]
+  }
+
+  /**
+   * 更新角色记忆
+   */
+  updateCharacterMemory(id: string, updates: Partial<CharacterMemory>): void {
+    const fields: string[] = []
+    const values: any[] = []
+
+    if (updates.content !== undefined) {
+      fields.push('content = ?')
+      values.push(updates.content)
+    }
+    if (updates.context !== undefined) {
+      fields.push('context = ?')
+      values.push(updates.context)
+    }
+    if (updates.importance !== undefined) {
+      fields.push('importance = ?')
+      values.push(updates.importance)
+    }
+    if (updates.emotional_intensity !== undefined) {
+      fields.push('emotional_intensity = ?')
+      values.push(updates.emotional_intensity)
+    }
+    if (updates.embedding !== undefined) {
+      fields.push('embedding = ?')
+      values.push(updates.embedding)
+    }
+    if (updates.is_deprecated !== undefined) {
+      fields.push('is_deprecated = ?')
+      values.push(updates.is_deprecated)
+    }
+
+    fields.push('updated_at = ?')
+    values.push(Date.now())
+    values.push(id)
+
+    const stmt = this.db.prepare(`UPDATE character_memories SET ${fields.join(', ')} WHERE id = ?`)
+    stmt.run(...values)
+  }
+
+  /**
+   * 更新记忆召回时间
+   */
+  updateMemoryRecall(memoryId: string): void {
+    const stmt = this.db.prepare(`
+      UPDATE character_memories 
+      SET last_recalled = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    const now = Date.now()
+    stmt.run(now, now, memoryId)
+  }
+
+  /**
+   * 标记角色记忆为废弃
+   */
+  deprecateCharacterMemory(id: string): void {
+    const stmt = this.db.prepare(`
+      UPDATE character_memories 
+      SET is_deprecated = 1, updated_at = ?
+      WHERE id = ?
+    `)
+    stmt.run(Date.now(), id)
+    console.log('[DatabaseService] 废弃角色记忆:', id)
+  }
+
+  // ==================== 角色状态管理 ====================
+
+  /**
+   * 获取角色状态
+   */
+  getCharacterState(characterId: string, userId: string): CharacterState | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM character_states 
+      WHERE character_id = ? AND user_id = ?
+    `)
+    const state = stmt.get(characterId, userId) as CharacterState | undefined
+    return state || null
+  }
+
+  /**
+   * 保存角色状态（插入或更新）
+   */
+  saveCharacterState(state: Omit<CharacterState, 'id'>): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO character_states (
+        character_id, user_id, emotion, emotion_intensity,
+        relationship, relationship_score, trust, trust_score,
+        energy, last_updated, last_interaction
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(character_id, user_id) DO UPDATE SET
+        emotion = excluded.emotion,
+        emotion_intensity = excluded.emotion_intensity,
+        relationship = excluded.relationship,
+        relationship_score = excluded.relationship_score,
+        trust = excluded.trust,
+        trust_score = excluded.trust_score,
+        energy = excluded.energy,
+        last_updated = excluded.last_updated,
+        last_interaction = excluded.last_interaction
+    `)
+
+    stmt.run(
+      state.character_id,
+      state.user_id,
+      state.emotion,
+      state.emotion_intensity,
+      state.relationship,
+      state.relationship_score,
+      state.trust,
+      state.trust_score,
+      state.energy,
+      state.last_updated,
+      state.last_interaction
+    )
+    console.log('[DatabaseService] 保存角色状态:', state.character_id)
+  }
+
+  /**
+   * 删除角色状态
+   */
+  deleteCharacterState(characterId: string, userId: string): void {
+    const stmt = this.db.prepare(`
+      DELETE FROM character_states 
+      WHERE character_id = ? AND user_id = ?
+    `)
+    stmt.run(characterId, userId)
   }
 }

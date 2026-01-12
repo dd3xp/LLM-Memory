@@ -23,9 +23,9 @@ export class EmotionSystemTest extends Command {
     console.log('[Test] 开始测试情绪系统...')
     try {
       // TODO: 测试情绪状态转换
-      console.log('[Test] ✅ 情绪系统测试通过')
+      console.log('[Test] 情绪系统测试通过')
     } catch (error) {
-      console.error('[Test] ❌ 情绪系统测试失败:', error)
+      console.error('[Test] 情绪系统测试失败:', error)
       throw error
     }
   }

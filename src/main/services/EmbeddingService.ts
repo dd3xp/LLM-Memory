@@ -26,7 +26,7 @@ export class EmbeddingService {
         quantized: true // 使用量化模型以减少内存占用
       }) as any  // 类型断言以避免 ts-node 编译问题
       
-      console.log('[EmbeddingService] ✅ Embedding模型加载完成')
+      console.log('[EmbeddingService] Embedding模型加载完成')
     } catch (error) {
       console.error('[EmbeddingService] 模型加载失败:', error)
       throw error

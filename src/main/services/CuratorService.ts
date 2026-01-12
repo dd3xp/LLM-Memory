@@ -9,11 +9,11 @@ import { DatabaseService, Insight } from './DatabaseService'
 import { EmbeddingService } from './EmbeddingService'
 import { v4 as uuidv4 } from 'uuid'
 
-// 动态导入消融配置（仅在测试环境）
-let getAblationConfig: (() => any) | null = null
+// 动态导入测试配置（仅在测试环境）
+let getTestConfig: (() => any) | null = null
 try {
-  const ablationModule = require('../../test/AblationConfig')
-  getAblationConfig = ablationModule.getAblationConfig
+  const testConfigModule = require('../../test/TestConfig')
+  getTestConfig = testConfigModule.getTestConfig
 } catch {
   // 测试模块不存在时忽略
 }
@@ -68,14 +68,14 @@ export class CuratorService {
 
       // 如果LLM返回空数组，说明没有可提取的知识
       if (extractedInsights.length === 0) {
-        console.log('[Curator] ℹ️ 对话中没有可提取的知识，跳过')
+        console.log('[Curator] 对话中没有可提取的知识，跳过')
         return []
       }
 
       // 检查提取质量：如果所有insights的重要性都很低，说明对话质量不高
       const avgImportance = extractedInsights.reduce((sum, i) => sum + i.importance, 0) / extractedInsights.length
       if (avgImportance < 0.6) {
-        console.log(`[Curator] ℹ️ 提取的知识质量较低（平均重要性: ${avgImportance.toFixed(2)}），跳过`)
+        console.log(`[Curator] 提取的知识质量较低（平均重要性: ${avgImportance.toFixed(2)}），跳过`)
         return []
       }
 
@@ -90,7 +90,10 @@ export class CuratorService {
       const totalExistingInsights = existingInsights.length
       const newInsightsToProcess = extractedInsights.filter(e => e.importance > 0.5)
       
-      console.log(`[Curator] 🔍 已有 ${totalExistingInsights} 条 Insights，开始处理 ${newInsightsToProcess.length} 条新知识`)
+      // 先对同一批次的新知识进行去重（防止 LLM 提取出相似的多条）
+      const dedupedNewInsights = await this.deduplicateNewInsights(newInsightsToProcess)
+      
+      console.log(`[Curator] 已有 ${totalExistingInsights} 条 Insights，处理 ${dedupedNewInsights.length} 条新知识（去重前 ${newInsightsToProcess.length} 条）`)
       
       interface PendingInsight {
         extracted: ExtractedInsight
@@ -100,12 +103,12 @@ export class CuratorService {
       
       const pendingInsights: PendingInsight[] = []
       
-      for (const extracted of newInsightsToProcess) {
+      for (const extracted of dedupedNewInsights) {
         // 快速检查相似度（不调用 LLM）
         const quickCheck = await this.quickSimilarityCheck(extracted, existingInsights)
         
         if (quickCheck.action === 'skip') {
-          console.log(`[Curator] ⏭️ 快速跳过重复: ${extracted.content.substring(0, 30)}...`)
+          console.log(`[Curator] 快速跳过重复: ${extracted.content.substring(0, 30)}...`)
           continue
         }
         
@@ -172,7 +175,7 @@ export class CuratorService {
       // 批量 LLM 检测（仅针对需要检测的）
       if (pendingInsights.length > 0) {
         const totalCandidates = pendingInsights.reduce((sum, p) => sum + (p.topSimilar?.length || 0), 0)
-        console.log(`[Curator] 🚀 一次性批量检测 ${pendingInsights.length} 条新 Insights (共 ${totalCandidates} 个候选配对)`)
+        console.log(`[Curator] 一次性批量检测 ${pendingInsights.length} 条新 Insights (共 ${totalCandidates} 个候选配对)`)
         const batchResults = await this.batchConflictCheck(pendingInsights)
         
         for (let i = 0; i < pendingInsights.length; i++) {
@@ -180,12 +183,12 @@ export class CuratorService {
           const result = batchResults[i]
           
           if (result.action === 'skip') {
-            console.log(`[Curator] ⏭️ 跳过: ${pending.extracted.content.substring(0, 30)}...`)
+            console.log(`[Curator] 跳过: ${pending.extracted.content.substring(0, 30)}...`)
             continue
           }
           
           if (result.action === 'deprecate' && result.conflictWith) {
-            console.log(`[Curator] 🔄 废弃旧的: ${result.conflictWith.content.substring(0, 30)}...`)
+            console.log(`[Curator] 废弃旧的: ${result.conflictWith.content.substring(0, 30)}...`)
             this.db.deprecateInsight(result.conflictWith.id)
           }
           
@@ -213,14 +216,14 @@ export class CuratorService {
       }
 
       if (insights.length === 0) {
-        console.log('[Curator] ℹ️ 提取的知识都已存在或质量不足，未添加新insights')
+        console.log('[Curator] 提取的知识都已存在或质量不足，未添加新insights')
       } else {
-        console.log(`[Curator] ✅ 提取了 ${insights.length} 条高质量Insights（去重后）`)
+        console.log(`[Curator] 提取了 ${insights.length} 条高质量Insights（去重后）`)
       }
       
       return insights
     } catch (error) {
-      console.error('[Curator] ❌ 提取Insights失败:', error)
+      console.error('[Curator] 提取Insights失败:', error)
       return []
     }
   }
@@ -254,7 +257,11 @@ ${conversation}
    - 0.7-0.8: 重要的方法、策略
    - 0.5-0.6: 有用的技巧、概念
    - <0.5: 不需要提取
-4. **重要**：如果对话内容是：
+4. **去重要求**：提取的知识之间不能有重复或高度相似的内容！
+   - 如果两条知识表达的是同一个意思，只保留更重要/更完整的那条
+   - 不要输出多个代码示例来说明同一个概念
+   - 合并相似的知识点，而不是分开列出
+5. **重要**：如果对话内容是：
    - 简单的寒暄、问候（"你好"、"谢谢"等）
    - 纯粹的闲聊、无技术内容
    - 只是询问而没有得到有用答案
@@ -341,8 +348,8 @@ ${conversation}
       similarity: number
     }
 
-    const now = Date.now()
     const scoredInsights: ScoredInsight[] = []
+    const MIN_SIMILARITY_THRESHOLD = 0.6  // 最低相似度阈值（只选相关及以上的）
 
     for (const insight of allInsights) {
       // 如果insight没有embedding（旧数据），跳过或使用降级方案
@@ -355,11 +362,14 @@ ${conversation}
       const insightEmbedding = EmbeddingService.fromBuffer(insight.embedding)
       const similarity = EmbeddingService.cosineSimilarity(queryEmbedding, insightEmbedding)
 
-      // 计算时效性分数
-      const timeScore = this.calculateTimeScore(insight.last_used, now)
+      // 过滤掉相似度过低的（避免引入不相关信息）
+      if (similarity < MIN_SIMILARITY_THRESHOLD) {
+        continue
+      }
 
-      // 综合得分 = 语义相似度(50%) + 重要性(30%) + 时效性(20%)
-      const score = similarity * 0.5 + insight.importance * 0.3 + timeScore * 0.2
+      // 综合得分 = 语义相似度(60%) + 重要性(40%)
+      // 移除时效性：技术知识不因时间久远而失效
+      const score = similarity * 0.6 + insight.importance * 0.4
 
       scoredInsights.push({ insight, score, similarity })
     }
@@ -367,12 +377,19 @@ ${conversation}
     // 按综合得分排序
     const sorted = scoredInsights.sort((a, b) => b.score - a.score)
 
-    // 逐条添加，直到达到token限制
+    // 逐条添加，直到达到数量或token限制
+    const MAX_INSIGHTS_COUNT = 10  // 最多返回10条
     const relevant: Insight[] = []
     let totalTokens = 0
 
     for (const item of sorted) {
       const insight = item.insight
+
+      // 数量限制：最多10条
+      if (relevant.length >= MAX_INSIGHTS_COUNT) {
+        console.log(`[Curator] 达到数量上限 (${MAX_INSIGHTS_COUNT})，停止添加更多insights`)
+        break
+      }
 
       // 如果提供了tokenCounter，检查token限制
       if (tokenCounter) {
@@ -410,7 +427,7 @@ ${conversation}
         return sum + (item?.similarity || 0)
       }, 0) / relevant.length
 
-      console.log(`[Curator] 🔍 找到 ${relevant.length} 条相关Insights (平均相似度: ${(avgSimilarity * 100).toFixed(1)}%)${tokenCounter ? `, 共 ${totalTokens} tokens` : ''}`)
+      console.log(`[Curator] 找到 ${relevant.length} 条相关Insights (平均相似度: ${(avgSimilarity * 100).toFixed(1)}%)${tokenCounter ? `, 共 ${totalTokens} tokens` : ''}`)
     }
 
     return relevant
@@ -433,32 +450,83 @@ ${conversation}
         method: '方法'
       }[insight.type]
 
-      return `[${typeLabel}] ${insight.content}\n背景: ${insight.context}`
+      // 计算知识的年龄
+      const ageText = this.formatAge(insight.created_at)
+
+      return `[${typeLabel}] [${ageText}] ${insight.content}\n背景: ${insight.context}`
     }).join('\n\n')
 
-    return `# 可复用知识库\n以下是之前积累的可复用知识：\n\n${formatted}\n\n---\n`
+    return `# 可复用知识库（注意：信息可能已过时，请结合时间戳判断）\n\n${formatted}\n\n---\n`
   }
 
   /**
-   * 计算时效性分数（0-1）
-   * 最近使用的得分高，超过30天线性衰减
+   * 格式化时间为可读的年龄描述
    */
-  private calculateTimeScore(lastUsed: number, now: number): number {
-    const daysSinceLastUse = (now - lastUsed) / 86400000 // 转换为天数
+  private formatAge(createdAt: number): string {
+    const now = Date.now()
+    const diffMs = now - createdAt
+    const diffDays = Math.floor(diffMs / 86400000)
     
-    if (daysSinceLastUse <= 7) {
-      // 7天内：满分
-      return 1.0
-    } else if (daysSinceLastUse <= 30) {
-      // 7-30天：线性衰减 1.0 -> 0.5
-      return 1.0 - ((daysSinceLastUse - 7) / 23) * 0.5
-    } else if (daysSinceLastUse <= 90) {
-      // 30-90天：继续衰减 0.5 -> 0.2
-      return 0.5 - ((daysSinceLastUse - 30) / 60) * 0.3
+    if (diffDays === 0) {
+      const diffHours = Math.floor(diffMs / 3600000)
+      if (diffHours === 0) {
+        return '刚刚'
+      }
+      return `${diffHours}小时前`
+    } else if (diffDays === 1) {
+      return '昨天'
+    } else if (diffDays < 7) {
+      return `${diffDays}天前`
+    } else if (diffDays < 30) {
+      return `${Math.floor(diffDays / 7)}周前`
+    } else if (diffDays < 365) {
+      return `${Math.floor(diffDays / 30)}个月前`
     } else {
-      // 90天以上：最低分
-      return 0.2
+      return `${Math.floor(diffDays / 365)}年前`
     }
+  }
+
+  /**
+   * 对同一批次提取的新知识进行去重
+   * 防止 LLM 提取出内容相似的多条知识
+   */
+  private async deduplicateNewInsights(insights: ExtractedInsight[]): Promise<ExtractedInsight[]> {
+    if (insights.length <= 1) {
+      return insights
+    }
+
+    const result: ExtractedInsight[] = []
+    const embeddings: Float32Array[] = []
+
+    for (const insight of insights) {
+      const embedding = await this.embedder.encode(insight.content)
+      
+      // 检查与已保留的知识的相似度
+      let isDuplicate = false
+      for (let i = 0; i < embeddings.length; i++) {
+        const similarity = EmbeddingService.cosineSimilarity(embedding, embeddings[i])
+        if (similarity >= 0.85) {
+          // 相似度 >= 85%，认为是重复的
+          // 保留重要性更高的那个
+          if (insight.importance > result[i].importance) {
+            result[i] = insight
+            embeddings[i] = embedding
+            console.log(`[Curator] 批次内去重: 替换为更高重要性的知识`)
+          } else {
+            console.log(`[Curator] 批次内去重: 跳过相似知识 (相似度 ${(similarity * 100).toFixed(1)}%)`)
+          }
+          isDuplicate = true
+          break
+        }
+      }
+      
+      if (!isDuplicate) {
+        result.push(insight)
+        embeddings.push(embedding)
+      }
+    }
+
+    return result
   }
 
   /**
@@ -488,11 +556,11 @@ ${conversation}
     conflictWith?: Insight
     topSimilar?: Array<{ insight: Insight; similarity: number }>
   }> {
-    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    const testConfig = getTestConfig ? getTestConfig() : null
     
     // 消融实验：如果禁用相似度检测，直接添加
-    if (ablationConfig && !ablationConfig.enableSimilarityCheck) {
-      console.log(`[Curator] ⏭️  相似度检测已禁用（消融实验），直接添加`)
+    if (testConfig && !testConfig.enableSimilarityCheck) {
+      console.log(`[Curator] 相似度检测已禁用（消融实验），直接添加`)
       return { action: 'add' }
     }
     
@@ -524,17 +592,17 @@ ${conversation}
     // 按相似度降序排序
     allSimilarities.sort((a, b) => b.similarity - a.similarity)
     
-    // ✨ 优化：只取 >= 0.80 的，且不超过 k 个
+    // 优化：只取 >= 0.80 的，且不超过 k 个
     const highSimilar = allSimilarities.filter(s => s.similarity >= 0.80)
     const topSimilar = highSimilar.slice(0, Math.min(highSimilar.length, topK))
     
     // 如果没有 >= 0.80 的，直接添加
     if (topSimilar.length === 0) {
-      console.log(`[Curator] ✅ 无高相似度项 (<80%)，直接添加`)
+      console.log(`[Curator] 无高相似度项 (<80%)，直接添加`)
       return { action: 'add' }
     }
     
-    console.log(`[Curator] ⚠️ 找到 ${highSimilar.length} 个高相似项 (≥80%)，发送 Top-${topSimilar.length} 给 LLM`)
+    console.log(`[Curator] 找到 ${highSimilar.length} 个高相似项 (>=80%)，发送 Top-${topSimilar.length} 给 LLM`)
     
     // 相似度 ≥ 0.80 - 需要 LLM 判断是冲突还是重复
     return { action: 'check_conflict', topSimilar }
@@ -556,11 +624,11 @@ ${conversation}
       return []
     }
     
-    const ablationConfig = getAblationConfig ? getAblationConfig() : null
+    const testConfig = getTestConfig ? getTestConfig() : null
     
     // 消融实验：如果禁用冲突检测，全部直接添加
-    if (ablationConfig && !ablationConfig.enableConflictCheck) {
-      console.log(`[Curator] ⏭️  冲突检测已禁用（消融实验），${pendingInsights.length} 条全部添加`)
+    if (testConfig && !testConfig.enableConflictCheck) {
+      console.log(`[Curator] 冲突检测已禁用（消融实验），${pendingInsights.length} 条全部添加`)
       return pendingInsights.map(() => ({ action: 'add' as const }))
     }
 
@@ -616,7 +684,7 @@ ${topSimilar.map((sim, simIdx) => `
 只输出JSON数组，不要其他文字。`
 
     try {
-      console.log(`[Curator] 📡 发起 1 次 LLM 调用，批量检测 ${pendingInsights.length} 条新知识...`)
+      console.log(`[Curator] 发起 1 次 LLM 调用，批量检测 ${pendingInsights.length} 条新知识...`)
       
       // 使用 Curator 模型批量检测（重点：这是一次调用！）
       const response = await this.llmService.generateCurator(
@@ -624,7 +692,7 @@ ${topSimilar.map((sim, simIdx) => `
         '你是一个专业的知识分析助手，擅长批量判断知识的冲突性、重复性和补充性。'
       )
 
-      console.log(`[Curator] ✅ LLM 批量检测完成，解析结果...`)
+      console.log(`[Curator] LLM 批量检测完成，解析结果...`)
       const results = this.parseBatchConflictResultTopK(response, pendingInsights)
       
       // 映射结果
@@ -639,9 +707,9 @@ ${topSimilar.map((sim, simIdx) => `
         
         // 清晰的日志输出
         const actionText = {
-          skip: '⏭️ 跳过（重复）',
-          deprecate: '🔄 替换旧的（冲突）',
-          add: '✅ 添加（补充）'
+          skip: '跳过（重复）',
+          deprecate: '替换旧的（冲突）',
+          add: '添加（补充）'
         }[result.action]
         
         console.log(`[Curator] 新${idx + 1}: ${actionText} - ${result.reason}`)
@@ -724,7 +792,7 @@ ${topSimilar.map((sim, simIdx) => `
    * 定期清理低质量Insights
    */
   async pruneInsights(conversationId: string): Promise<void> {
-    console.log('[Curator] 🧹 开始清理低质量insights...')
+    console.log('[Curator] 开始清理低质量insights...')
     
     // 清理低重要性且未使用的insights
     this.db.pruneInsights(conversationId, 0.5)
@@ -732,6 +800,6 @@ ${topSimilar.map((sim, simIdx) => `
     // 清理已废弃超过30天的insights
     this.db.pruneDeprecatedInsights(conversationId, 30)
     
-    console.log('[Curator] ✅ Insights清理完成')
+    console.log('[Curator] Insights清理完成')
   }
 }

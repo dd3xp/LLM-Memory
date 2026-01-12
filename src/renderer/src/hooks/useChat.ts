@@ -2,7 +2,7 @@
  * 聊天逻辑 Hook - 支持对话管理和持久化
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 export interface Message {
   id: string
@@ -25,6 +25,12 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
+  
+  // 使用 ref 追踪最新的 currentConversationId，解决闭包问题
+  const currentConversationIdRef = useRef<string | null>(currentConversationId)
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversationId
+  }, [currentConversationId])
 
   // 加载对话列表
   const loadConversations = async (): Promise<void> => {
@@ -130,8 +136,8 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
       const response = await window.api.sendMessage(content)
 
       // 只有当前对话ID仍然是发送消息的对话时，才添加回复
-      // 这样即使用户切换了对话，回复也不会显示在错误的对话中
-      if (currentConversationId === messageConversationId) {
+      // 使用 ref 获取最新的 currentConversationId，避免闭包问题
+      if (currentConversationIdRef.current === messageConversationId) {
         // 添加助手回复
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
@@ -148,7 +154,7 @@ export function useChat(mode: 'qa' | 'chat' = 'qa') {
       console.error('发送消息失败:', error)
       
       // 只有当前对话ID仍然是发送消息的对话时，才显示错误
-      if (currentConversationId === messageConversationId) {
+      if (currentConversationIdRef.current === messageConversationId) {
         // 添加错误消息
         const errorMessage: Message = {
           id: (Date.now() + 1).toString(),

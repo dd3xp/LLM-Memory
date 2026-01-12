@@ -36,7 +36,7 @@ function TabBar({ activeTab, onTabChange }: TabBarProps): React.JSX.Element {
             color: 'white'
           }}
         >
-          M
+          JK
         </div>
         <span
           style={{
@@ -46,7 +46,7 @@ function TabBar({ activeTab, onTabChange }: TabBarProps): React.JSX.Element {
             letterSpacing: '-0.01em'
           }}
         >
-          Memory
+          J0K3R KH3VV
         </span>
       </div>
 

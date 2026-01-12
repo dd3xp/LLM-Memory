@@ -94,9 +94,9 @@ export class MetricsCollector {
         name: initConfig.name,
         config: initConfig.config
       })
-      console.log('[Metrics] ✅ Wandb initialized successfully')
+      console.log('[Metrics] Wandb initialized successfully')
     } catch (error) {
-      console.error('[Metrics] ❌ Failed to initialize wandb:', error)
+      console.error('[Metrics] Failed to initialize wandb:', error)
       this.enabled = false
     }
   }
@@ -357,9 +357,9 @@ export class MetricsCollector {
   }
 
   /**
-   * 完成wandb运行
+   * 完成wandb运行，返回运行URL
    */
-  async finish() {
+  async finish(): Promise<string | null> {
     if (this.enabled && this.wandbRun) {
       const summary = this.getSummary()
       
@@ -373,9 +373,26 @@ export class MetricsCollector {
         'final/avg_insights_used': summary.quality.avgInsightsUsed
       })
 
+      // 获取运行URL（可能是属性或函数）
+      let runUrl: string | null = null
+      try {
+        if (typeof this.wandbRun.url === 'function') {
+          runUrl = this.wandbRun.url()
+        } else if (typeof this.wandbRun.url === 'string') {
+          runUrl = this.wandbRun.url
+        } else if (this.wandbRun.getUrl) {
+          runUrl = this.wandbRun.getUrl()
+        }
+      } catch {
+        // 忽略获取 URL 失败
+      }
+      
       await wandb.finish()
-      console.log('[Metrics] ✅ Wandb run finished')
+      console.log('[Metrics] Wandb run finished')
+      
+      return runUrl
     }
+    return null
   }
 
   /**

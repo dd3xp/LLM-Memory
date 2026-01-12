@@ -33,7 +33,7 @@ interface ChatAPI {
   switchConversation: (conversationId: string) => Promise<Message[]>
   togglePinConversation: (conversationId: string) => Promise<void>
   deleteConversation: (conversationId: string) => Promise<void>
-  
+
   // 消息管理
   sendMessage: (message: string) => Promise<string>
   getMessages: () => Promise<Message[]>

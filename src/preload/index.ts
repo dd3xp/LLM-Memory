@@ -4,7 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 // Custom APIs for renderer
 const api = {
   // ==================== 对话管理 ====================
-  
+
   // 创建新对话
   createConversation: (type: 'qa' | 'chat' = 'qa'): Promise<unknown> => {
     return ipcRenderer.invoke('conversation:create', type)

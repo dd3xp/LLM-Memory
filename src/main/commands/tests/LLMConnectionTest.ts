@@ -24,9 +24,9 @@ export class LLMConnectionTest extends Command {
     console.log('[Test] 开始测试 LLM 连接...')
     try {
       // TODO: 实际调用 LLM API 测试
-      console.log('[Test] ✅ LLM 连接成功')
+      console.log('[Test] LLM 连接成功')
     } catch (error) {
-      console.error('[Test] ❌ LLM 连接失败:', error)
+      console.error('[Test] LLM 连接失败:', error)
       throw error
     }
   }
