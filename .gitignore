@@ -40,3 +40,7 @@ wandb/
 .env
 .env.local
 .env.*.local
+
+# private resources
+resources/private/
+docs
