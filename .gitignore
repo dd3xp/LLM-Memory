@@ -32,10 +32,6 @@ build
 *.db-journal
 *.db-wal
 
-# Test results
-test-results/
-wandb/
-
 # Environment variables
 .env
 .env.local

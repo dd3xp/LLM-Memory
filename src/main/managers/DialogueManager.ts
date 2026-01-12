@@ -43,6 +43,7 @@ export class DialogueManager {
 
   // 测试辅助
   public lastInsightsUsedCount: number = 0
+  public lastContextTokens: number = 0  // 实际发送给 LLM 的上下文 token 数
 
   constructor(conversationId: string, testDbPath?: string) {
     this.conversationId = conversationId
@@ -178,8 +179,9 @@ export class DialogueManager {
       // 3. 构建上下文（使用装饰器链）
       const contextResult = await this.memoryComponent.buildContext(memoryContext, userMessage)
 
-      // 更新 Insights 使用计数
+      // 更新测试辅助属性
       this.lastInsightsUsedCount = contextResult.metadata.insightsCount || 0
+      this.lastContextTokens = contextResult.totalTokens  // 记录实际发送的 context 大小
 
       console.log(`[DialogueManager] 上下文构建完成: ${contextResult.messages.length} 条消息, ${contextResult.totalTokens} tokens`)
 

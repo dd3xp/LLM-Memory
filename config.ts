@@ -3,7 +3,7 @@
  */
 
 // 模型总上下文窗口大小
-const MODEL_CONTEXT_WINDOW = 128000  // 128k tokens
+const MODEL_CONTEXT_WINDOW = 0  // 替换为你的模型上下文窗口大小，如 128000
 
 // Token 分配比例（基于 MODEL_CONTEXT_WINDOW）
 const TOKEN_RATIOS = {
@@ -29,27 +29,27 @@ export const config = {
   llm: {
     // 对话模型
     chat: {
-      apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
-      baseURL: 'https://api.siliconflow.cn/v1',
-      model: 'Qwen/Qwen3-8B',
+      apiKey: 'YOUR_SILICONFLOW_API_KEY',
+      baseURL: 'YOUR_API_BASE_URL',
+      model: 'YOUR_MODEL_NAME',
       temperature: 0.7,
       maxTokens: Math.floor(MODEL_CONTEXT_WINDOW * TOKEN_RATIOS.chatResponse),
       topP: 0.9
     },
     // 摘要模型
     summary: {
-      apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
-      baseURL: 'https://api.siliconflow.cn/v1',
-      model: 'Qwen/Qwen3-8B',
+      apiKey: 'YOUR_SILICONFLOW_API_KEY',
+      baseURL: 'YOUR_API_BASE_URL',
+      model: 'YOUR_MODEL_NAME',
       temperature: 0.3,
       maxTokens: Math.floor(MODEL_CONTEXT_WINDOW * TOKEN_RATIOS.summaryResponse),
       topP: 0.8
     },
     // Curator 模型（知识策展）
     curator: {
-      apiKey: 'sk-ylkvvzhxnzpxkywlgwtextfpjrlrkispjprqnmhctqrclvez',
-      baseURL: 'https://api.siliconflow.cn/v1',
-      model: 'Qwen/Qwen3-8B',
+      apiKey: 'YOUR_SILICONFLOW_API_KEY',
+      baseURL: 'YOUR_API_BASE_URL',
+      model: 'YOUR_MODEL_NAME',
       temperature: 0.3,
       maxTokens: Math.floor(MODEL_CONTEXT_WINDOW * TOKEN_RATIOS.curatorResponse),
       topP: 0.8
@@ -67,7 +67,7 @@ export const config = {
 
   // wandb 配置
   wandb: {
-    apiKey: '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',
+    apiKey: 'YOUR_WANDB_API_KEY',
     enabled: true
   }
 }

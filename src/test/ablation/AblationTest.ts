@@ -479,19 +479,18 @@ export class AblationTest {
       }
 
       // 从数据库读取当前状态
-      const allMessages = db.getMessages(conversationId)
       const allInsights = db.getInsights(conversationId)
       const summary = db.getSummary(conversationId)
 
-      // 估算 token 数量
+      // 估算 token 数量（用于计算 tokensUsed）
       const estimateTokens = (text: string) => {
         const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length
         const otherChars = text.length - chineseChars
         return Math.ceil(chineseChars / 1.5 + otherChars / 4)
       }
 
-      const contextTokens = allMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0) +
-        (summary?.tokens || 0)
+      // 使用 DialogueManager 记录的实际发送给 LLM 的 context token 数
+      const contextTokens = dialogue.lastContextTokens
 
       // 记录性能指标
       metrics.recordPerformance({
@@ -729,11 +728,18 @@ export class AblationTest {
         const hitRate = noInsights.keywordHits.length > 0 
           ? (noInsights.keywordHits.reduce((sum, h) => sum + h.hitRate, 0) / noInsights.keywordHits.length * 100).toFixed(1)
           : '0.0'
+        const hitRateDrop = parseFloat(baselineHitRate) - parseFloat(hitRate)
         report += `#### 禁用 Insights（只保留 Summary）\n\n`
         report += `- **Insights 数量**：${baselineInsights} → ${insights} 条\n`
         report += `- **记忆召回率**：${baselineHitRate}% → ${hitRate}%\n`
         report += `- **差异**：${(parseFloat(hitRate) - parseFloat(baselineHitRate)).toFixed(1)}%\n`
-        report += `- **结论**：${parseFloat(hitRate) < parseFloat(baselineHitRate) - 10 ? 'Insights 对记忆有显著贡献' : 'Summary 也能保持一定记忆'}\n\n`
+        if (hitRateDrop > 20) {
+          report += `- **结论**：Insights 对记忆有显著贡献，禁用后召回率下降 ${hitRateDrop.toFixed(1)}%\n\n`
+        } else if (hitRateDrop > 10) {
+          report += `- **结论**：Insights 对记忆有一定贡献，禁用后召回率下降 ${hitRateDrop.toFixed(1)}%\n\n`
+        } else {
+          report += `- **结论**：Summary 已能保持大部分记忆，Insights 提供补充作用\n\n`
+        }
       }
 
       // No-Summary
@@ -750,10 +756,14 @@ export class AblationTest {
         report += `- **Insights 数量**：${baselineInsights} → ${noSummary.summary.memory?.latestInsights || 0} 条\n`
         report += `- **记忆召回率**：${baselineHitRate}% → ${noSummaryHitRate}% （${(parseFloat(noSummaryHitRate) - parseFloat(baselineHitRate)).toFixed(1)}%）\n`
         
-        if (parseFloat(avgContext) > parseFloat(baselineContext) * 1.5) {
-          report += `- **结论**：上下文显著膨胀（+${contextIncrease}%），长对话会耗尽上下文限制\n\n`
+        // 根据召回率变化判断结论，而不是上下文大小
+        const hitRateDrop = parseFloat(baselineHitRate) - parseFloat(noSummaryHitRate)
+        if (hitRateDrop > 20) {
+          report += `- **结论**：Summary 是最关键的组件，禁用后召回率大幅下降 ${hitRateDrop.toFixed(1)}%\n\n`
+        } else if (hitRateDrop > 10) {
+          report += `- **结论**：Summary 对记忆有显著贡献，禁用后召回率下降 ${hitRateDrop.toFixed(1)}%\n\n`
         } else {
-          report += `- **结论**：影响较小（测试轮次不够触发摘要生成）\n\n`
+          report += `- **结论**：影响较小（测试轮次不够触发摘要生成或 Insights 已覆盖关键信息）\n\n`
         }
       }
     }

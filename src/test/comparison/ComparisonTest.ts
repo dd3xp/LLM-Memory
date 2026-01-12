@@ -397,19 +397,18 @@ export class ComparisonTest {
       }
 
       // 从数据库读取当前状态
-      const allMessages = db.getMessages(conversationId)
       const allInsights = db.getInsights(conversationId)
       const summary = db.getSummary(conversationId)
       
-      // 估算 token 数量（粗略估算：中文约1.5字符/token，英文约4字符/token）
+      // 估算 token 数量（用于计算 tokensUsed）
       const estimateTokens = (text: string) => {
         const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length
         const otherChars = text.length - chineseChars
         return Math.ceil(chineseChars / 1.5 + otherChars / 4)
       }
       
-      const contextTokens = allMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0) +
-                           (summary?.tokens || 0)
+      // 使用 DialogueManager 记录的实际发送给 LLM 的 context token 数
+      const contextTokens = dialogue.lastContextTokens
 
       // 记录性能指标
       metrics.recordPerformance({
