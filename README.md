@@ -60,4 +60,6 @@
     npm run dev
     ```
 
+    如果测试运行时间太久可以看一下我的实机演示 [实机演示](./test-results/media/video.webm)
+    
 # **如果有任何问题请和我联系**
