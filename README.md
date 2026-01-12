@@ -23,11 +23,11 @@
 
 4. 填写配置文件
 
-    打开 `config.ts`，配置以下内容：
+    打开 [config.ts](./config.ts)，配置以下内容：
 
     ```typescript
     // 模型上下文窗口大小
-    const MODEL_CONTEXT_WINDOW = 128000  // 根据你的模型设置，如 128k
+    const MODEL_CONTEXT_WINDOW = 128000  // 根据你的模型设置，如 128000
 
     // LLM 配置（chat、summary、curator 三个模型都需要配置）
     chat: {
@@ -52,7 +52,7 @@
     npm run test:ablation # 用于禁用本助手的各个模块对比指标好坏
     ```
 
-    自动测试结果位于 [test-result](./test-results/)
+    自动测试结果位于 [test-result](./test-results/)，测试配置位于 [TestConfig.ts](./src/test/TestConfig.ts)
 
 6. 运行人工测试：用于验证回复质量
 
@@ -60,6 +60,6 @@
     npm run dev
     ```
 
-    如果测试运行时间太久可以看一下我的实机演示 [实机演示](./test-results/media/video.webm)
-    
+    如果测试运行时间太久可以看一下我的实机演示 [实机演示视频](./test-results/media/video.webm)
+
 # **如果有任何问题请和我联系**
